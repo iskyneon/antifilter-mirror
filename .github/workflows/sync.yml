@@ -1,0 +1,81 @@
+
+name: Sync Antifilter Lists
+
+on:
+  schedule:
+    - cron: '17 */12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: antifilter-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Download original lists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .download
+
+          for file in allyouneed.lst domains.lst; do
+            echo "Downloading $file"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              --retry 3 \
+              --retry-delay 10 \
+              --connect-timeout 20 \
+              --max-time 300 \
+              "https://antifilter.download/list/$file" \
+              --output ".download/$file"
+
+            test -s ".download/$file"
+
+            if head -c 256 ".download/$file" |
+              grep -Eiq '<!doctype html|<html'; then
+              echo "Unexpected HTML response: $file"
+              exit 1
+            fi
+
+            sha256sum ".download/$file"
+          done
+
+          for file in allyouneed.lst domains.lst; do
+            mv ".download/$file" "$file"
+          done
+
+      - name: Commit and push changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- allyouneed.lst domains.lst
+
+          if git diff --cached --quiet; then
+            echo "No changes detected"
+            exit 0
+          fi
+
+          git commit -m "Update Antifilter lists"
+          git push
